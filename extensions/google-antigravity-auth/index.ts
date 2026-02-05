@@ -1,6 +1,5 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
-import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
 import { AccountManager } from "./account-manager.js";
 import { AccountRotator } from "./rotator.js";
 import { RotationStrategy } from "./types.js";
