@@ -305,6 +305,19 @@ export const OpenClawSchema = z
       })
       .strict()
       .optional(),
+    antigravity: z
+      .object({
+        rotationStrategy: z
+          .union([
+            z.literal("round-robin"),
+            z.literal("priority"),
+            z.literal("least-used"),
+            z.literal("failover"),
+          ])
+          .optional(),
+      })
+      .strict()
+      .optional(),
     web: z
       .object({
         enabled: z.boolean().optional(),

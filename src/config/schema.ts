@@ -256,6 +256,7 @@ const FIELD_LABELS: Record<string, string> = {
     "Memory Search Hybrid Candidate Multiplier",
   "agents.defaults.memorySearch.cache.enabled": "Memory Search Embedding Cache",
   "agents.defaults.memorySearch.cache.maxEntries": "Memory Search Embedding Cache Max Entries",
+  "antigravity.rotationStrategy": "Antigravity Rotation Strategy",
   memory: "Memory",
   "memory.backend": "Memory Backend",
   "memory.citations": "Memory Citations Mode",
@@ -600,6 +601,8 @@ const FIELD_HELP: Record<string, string> = {
     "How often the QMD sidecar refreshes indexes (duration string, default: 5m).",
   "memory.qmd.update.debounceMs":
     "Minimum delay between successive QMD refresh runs (default: 15000).",
+  "antigravity.rotationStrategy":
+    "Strategy for rotating Google Antigravity accounts (round-robin, priority, least-used, failover).",
   "memory.qmd.update.onBoot": "Run QMD update once on gateway startup (default: true).",
   "memory.qmd.update.embedInterval":
     "How often QMD embeddings are refreshed (duration string, default: 60m). Set to 0 to disable periodic embed.",
@@ -999,9 +1002,9 @@ function applyPluginSchemas(schema: ConfigSchema, plugins: PluginUiMetadata[]): 
     const pluginSchema = asSchemaObject(plugin.configSchema);
     const nextConfigSchema =
       baseConfigSchema &&
-      pluginSchema &&
-      isObjectSchema(baseConfigSchema) &&
-      isObjectSchema(pluginSchema)
+        pluginSchema &&
+        isObjectSchema(baseConfigSchema) &&
+        isObjectSchema(pluginSchema)
         ? mergeObjectSchema(baseConfigSchema, pluginSchema)
         : cloneSchema(plugin.configSchema);
 

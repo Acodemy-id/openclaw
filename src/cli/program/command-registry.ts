@@ -4,6 +4,7 @@ import { agentsListCommand } from "../../commands/agents.js";
 import { healthCommand } from "../../commands/health.js";
 import { sessionsCommand } from "../../commands/sessions.js";
 import { statusCommand } from "../../commands/status.js";
+import { antigravityLoginCommand } from "../../commands/antigravity-login.js";
 import { defaultRuntime } from "../../runtime.js";
 import { getFlagValue, getPositiveIntFlagValue, getVerboseFlag, hasFlag } from "../argv.js";
 import { registerBrowserCli } from "../browser-cli.js";
@@ -160,6 +161,16 @@ export const commandRegistry: CommandRegistration[] = [
   {
     id: "browser",
     register: ({ program }) => registerBrowserCli(program),
+  },
+  {
+    id: "antigravity-login",
+    register: ({ program }) =>
+      program
+        .command("antigravity-login")
+        .description("Login to Google Antigravity with multiple accounts")
+        .action(async () => {
+          await antigravityLoginCommand();
+        }),
   },
 ];
 
