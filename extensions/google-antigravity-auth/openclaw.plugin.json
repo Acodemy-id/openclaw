@@ -1,22 +1,14 @@
 {
   "id": "google-antigravity-auth",
+  "name": "Google Antigravity Auth",
+  "description": "OAuth flow for Google Antigravity with Multi-Account Rotation",
+  "version": "1.0.0",
   "providers": [
     "google-antigravity"
   ],
   "configSchema": {
     "type": "object",
-    "additionalProperties": true,
-    "properties": {
-      "rotationStrategy": {
-        "type": "string",
-        "enum": [
-          "round-robin",
-          "priority",
-          "least-used",
-          "failover"
-        ],
-        "default": "round-robin"
-      }
-    }
+    "additionalProperties": false,
+    "properties": {}
   }
 }

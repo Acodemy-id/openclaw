@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { z } from "zod";
+import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
 import { AccountManager } from "./account-manager.js";
 import { AccountRotator } from "./rotator.js";
 import { RotationStrategy } from "./types.js";
@@ -108,23 +108,15 @@ async function loginAntigravity(params: {
   return { ...tokens, email, projectId };
 }
 
-
-// ... existing imports
-
-
 const antigravityPlugin = {
   id: "google-antigravity-auth",
   name: "Google Antigravity Auth",
   description: "OAuth flow for Google Antigravity (Cloud Code Assist) with Multi-Account Rotation",
-  configSchema: z.object({
-    rotationStrategy: z
-      .enum(["round-robin", "priority", "least-used", "failover"])
-      .optional()
-      .default("round-robin"),
-  }),
+  configSchema: emptyPluginConfigSchema(),
   register(api: any) {
     const manager = new AccountManager();
-    const strategy = (api.pluginConfig?.rotationStrategy as RotationStrategy) || 'round-robin';
+    // Rotation strategy via env var: ANTIGRAVITY_ROTATION_STRATEGY (round-robin|priority|least-used|failover)
+    const strategy = (process.env.ANTIGRAVITY_ROTATION_STRATEGY as RotationStrategy) || 'round-robin';
     const rotator = new AccountRotator(manager, strategy);
 
     api.registerProvider({
