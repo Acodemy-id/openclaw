@@ -1,9 +1,22 @@
 {
   "id": "google-antigravity-auth",
-  "providers": ["google-antigravity"],
+  "providers": [
+    "google-antigravity"
+  ],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "properties": {}
+    "properties": {
+      "rotationStrategy": {
+        "type": "string",
+        "enum": [
+          "round-robin",
+          "priority",
+          "least-used",
+          "failover"
+        ],
+        "default": "round-robin"
+      }
+    }
   }
 }
