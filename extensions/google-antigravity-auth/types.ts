@@ -13,6 +13,8 @@ export interface AntigravityAccount {
     requestCount?: number; // Total requests made
     failureCount?: number; // Consecutive failures
     isRateLimited?: boolean;
+    rateLimitedUntil?: number; // timestamp in ms - when rate limit expires
+    lastRefreshed?: number; // timestamp in ms - for auto-refresh tracking
 }
 
 export interface AntigravityProviderConfig {

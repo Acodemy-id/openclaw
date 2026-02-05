@@ -2,10 +2,13 @@ import { readFileSync } from "node:fs";
 import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
 import { AccountManager } from "./account-manager.js";
 import { AccountRotator } from "./rotator.js";
-import { RotationStrategy } from "./types.js";
+import { RotationStrategy, AntigravityAccount } from "./types.js";
 import { CliAuthenticator, exchangeCode, fetchProjectId, fetchUserEmail, refreshAccessToken, AuthParams } from "./cli-auth.js";
+import { registerCliCommands, registerChatCommands } from "./commands.js";
 
 const DEFAULT_MODEL = "google-antigravity/claude-opus-4-5-thinking";
+const TOKEN_REFRESH_INTERVAL_MS = 30 * 60 * 1000; // Refresh tokens every 30 minutes
+const TOKEN_EXPIRY_THRESHOLD_MS = 5 * 60 * 1000; // Refresh if expiring within 5 minutes
 
 function isWSL(): boolean {
   if (process.platform !== "linux") {
@@ -108,6 +111,113 @@ async function loginAntigravity(params: {
   return { ...tokens, email, projectId };
 }
 
+/**
+ * Background task to refresh tokens for all accounts periodically
+ */
+async function startAutoTokenRefresh(
+  rotator: AccountRotator,
+  log: (msg: string) => void
+): Promise<NodeJS.Timeout> {
+  const refreshAllTokens = async () => {
+    try {
+      const accounts = await rotator.getAccountsNeedingRefresh(TOKEN_EXPIRY_THRESHOLD_MS);
+
+      if (accounts.length === 0) {
+        return;
+      }
+
+      log(`[AutoRefresh] Refreshing ${accounts.length} account(s) with expiring tokens`);
+
+      for (const account of accounts) {
+        try {
+          const tokens = await refreshAccessToken(account.refreshToken);
+          await rotator.updateAccountTokens(account.email, tokens.access, tokens.expires);
+          log(`[AutoRefresh] Refreshed token for ${account.email}`);
+        } catch (error: any) {
+          log(`[AutoRefresh] Failed to refresh ${account.email}: ${error.message}`);
+          await rotator.reportFailure(account.email, false);
+        }
+      }
+    } catch (error: any) {
+      log(`[AutoRefresh] Error: ${error.message}`);
+    }
+  };
+
+  // Run immediately on start
+  await refreshAllTokens();
+
+  // Then schedule periodic refresh
+  return setInterval(refreshAllTokens, TOKEN_REFRESH_INTERVAL_MS);
+}
+
+/**
+ * Response interceptor for handling HTTP errors with auto-rotation
+ */
+function createResponseInterceptor(rotator: AccountRotator, log: (msg: string) => void) {
+  return {
+    async handleResponse(
+      status: number,
+      currentEmail: string,
+      retryAfterMs?: number
+    ): Promise<{
+      action: 'continue' | 'retry' | 'switch' | 'fail';
+      newCredentials?: AntigravityAccount | null;
+      delay?: number;
+    }> {
+      if (status >= 200 && status < 300) {
+        await rotator.reportSuccess(currentEmail);
+        return { action: 'continue' };
+      }
+
+      if (status === 429) {
+        log(`[Interceptor] 429 Rate Limit for ${currentEmail}`);
+        const newAccount = await rotator.handle429(currentEmail, retryAfterMs);
+        if (newAccount) {
+          return { action: 'switch', newCredentials: newAccount };
+        }
+        return { action: 'fail' };
+      }
+
+      if (status === 401) {
+        log(`[Interceptor] 401 Unauthorized for ${currentEmail}`);
+        const result = await rotator.handle401(currentEmail);
+        if (result.shouldRetry) {
+          return { action: 'retry', delay: 1000 };
+        }
+        if (result.newAccount) {
+          return { action: 'switch', newCredentials: result.newAccount };
+        }
+        return { action: 'fail' };
+      }
+
+      if (status === 403) {
+        log(`[Interceptor] 403 Forbidden for ${currentEmail}`);
+        const newAccount = await rotator.handle403(currentEmail);
+        if (newAccount) {
+          return { action: 'switch', newCredentials: newAccount };
+        }
+        return { action: 'fail' };
+      }
+
+      if (status >= 500 && status < 600) {
+        log(`[Interceptor] ${status} Server Error for ${currentEmail}`);
+        const result = await rotator.handle5xx(currentEmail);
+        if (result.shouldRetry) {
+          return { action: 'retry', delay: result.delay };
+        }
+        const newAccount = await rotator.getNextAccount();
+        if (newAccount) {
+          return { action: 'switch', newCredentials: newAccount };
+        }
+        return { action: 'fail' };
+      }
+
+      await rotator.reportFailure(currentEmail, false);
+      return { action: 'continue' };
+    }
+  };
+}
+
 const antigravityPlugin = {
   id: "google-antigravity-auth",
   name: "Google Antigravity Auth",
@@ -115,9 +225,53 @@ const antigravityPlugin = {
   configSchema: emptyPluginConfigSchema(),
   register(api: any) {
     const manager = new AccountManager();
-    // Rotation strategy via env var: ANTIGRAVITY_ROTATION_STRATEGY (round-robin|priority|least-used|failover)
     const strategy = (process.env.ANTIGRAVITY_ROTATION_STRATEGY as RotationStrategy) || 'round-robin';
     const rotator = new AccountRotator(manager, strategy);
+
+    // Set up logging
+    const log = (msg: string) => {
+      if (api.runtime?.log) {
+        api.runtime.log(msg);
+      } else {
+        console.log(msg);
+      }
+    };
+    rotator.setLogger(log);
+
+    // Register CLI commands (openclaw antigravity ...)
+    registerCliCommands(api, manager, rotator, log);
+
+    // Register chat commands (/ag-list, /ag-switch, etc.)
+    registerChatCommands(api, manager, rotator, log);
+
+    // Create response interceptor for external use
+    const interceptor = createResponseInterceptor(rotator, log);
+
+    // Start auto-refresh background task
+    let refreshTimer: NodeJS.Timeout | null = null;
+
+    // Expose utilities via api for external use
+    if (api.expose) {
+      api.expose('antigravity', {
+        rotator,
+        interceptor,
+        refreshAllTokens: async () => {
+          const accounts = await rotator.getAllAccounts();
+          const results: { email: string; success: boolean; error?: string }[] = [];
+
+          for (const account of accounts) {
+            try {
+              const tokens = await refreshAccessToken(account.refreshToken);
+              await rotator.updateAccountTokens(account.email, tokens.access, tokens.expires);
+              results.push({ email: account.email, success: true });
+            } catch (error: any) {
+              results.push({ email: account.email, success: false, error: error.message });
+            }
+          }
+          return results;
+        }
+      });
+    }
 
     api.registerProvider({
       id: "google-antigravity",
@@ -128,7 +282,7 @@ const antigravityPlugin = {
         {
           id: "oauth",
           label: "Google OAuth",
-          hint: "Multi-Account Manager",
+          hint: "Multi-Account Manager with Auto-Rotation",
           kind: "oauth",
           run: async (ctx: any) => {
             const spin = ctx.prompter.progress("Starting Antigravity OAuth…");
@@ -150,9 +304,16 @@ const antigravityPlugin = {
                   refreshToken: result.refresh,
                   expiresAt: result.expires,
                   projectId: result.projectId,
-                  priority: 1
+                  priority: 1,
+                  lastRefreshed: Date.now()
                 });
                 ctx.runtime.log(`Account ${result.email} saved to multi-account manager.`);
+
+                // Start auto-refresh if not already running
+                if (!refreshTimer) {
+                  refreshTimer = await startAutoTokenRefresh(rotator, log);
+                  ctx.runtime.log('[Antigravity] Auto-refresh background task started');
+                }
               }
 
               const profileId = `google-antigravity:${result.email ?? "default"}`;
@@ -183,7 +344,10 @@ const antigravityPlugin = {
                 defaultModel: DEFAULT_MODEL,
                 notes: [
                   "Antigravity uses Google Cloud project quotas.",
-                  "Multi-account rotation is enabled based on plugin config.",
+                  "Multi-account rotation enabled with circuit breaker (3 failures = switch).",
+                  "Auto token refresh runs every 30 minutes.",
+                  "CLI: openclaw antigravity list|switch|disable|enable|refresh",
+                  "Chat: /ag-list /ag-switch /ag-disable /ag-enable /ag-refresh",
                 ],
               };
             } catch (err) {
@@ -194,39 +358,50 @@ const antigravityPlugin = {
         },
       ],
       refreshOAuth: async (cred: any) => {
-        // INTERCEPT: Rotate account on refresh
         const account = await rotator.getNextAccount();
         if (!account) {
-          // Fallback to original refresh if no accounts manager? 
-          // Or just fail.
-          throw new Error("No available accounts in rotator.");
+          throw new Error("No available accounts in rotator. All accounts may be rate limited.");
         }
 
-        if (account.expiresAt < Date.now()) {
-          try {
-            const tokens = await refreshAccessToken(account.refreshToken);
-            await manager.updateAccount(account.email, {
-              accessToken: tokens.access,
-              expiresAt: tokens.expires,
-              failureCount: 0
-            });
+        log(`[RefreshOAuth] Selected account: ${account.email}`);
 
-            // Return refreshed
+        if (account.expiresAt < Date.now() + TOKEN_EXPIRY_THRESHOLD_MS) {
+          try {
+            log(`[RefreshOAuth] Token expiring, refreshing for ${account.email}`);
+            const tokens = await refreshAccessToken(account.refreshToken);
+            await rotator.updateAccountTokens(account.email, tokens.access, tokens.expires);
+
             return {
-              ...cred, // preserve type/provider
+              ...cred,
               access: tokens.access,
               refresh: account.refreshToken,
               expires: tokens.expires,
               email: account.email,
               projectId: account.projectId
             };
-          } catch (e) {
-            await rotator.reportFailure(account.email, false);
+          } catch (e: any) {
+            log(`[RefreshOAuth] Refresh failed for ${account.email}: ${e.message}`);
+            const circuitBroken = await rotator.reportFailure(account.email, false);
+
+            if (circuitBroken) {
+              const nextAccount = await rotator.getNextAccount();
+              if (nextAccount && nextAccount.email !== account.email) {
+                log(`[RefreshOAuth] Circuit broken, switching to ${nextAccount.email}`);
+                return {
+                  ...cred,
+                  access: nextAccount.accessToken,
+                  refresh: nextAccount.refreshToken,
+                  expires: nextAccount.expiresAt,
+                  email: nextAccount.email,
+                  projectId: nextAccount.projectId
+                };
+              }
+            }
             throw e;
           }
         }
 
-        // Return valid account credentials (switching identity)
+        await rotator.reportSuccess(account.email);
         return {
           ...cred,
           access: account.accessToken,
